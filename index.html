@@ -1,0 +1,318 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  
+  <link rel="manifest" href="manifest.json">
+  <link rel="apple-touch-icon" href="icon.png">
+  <meta name="theme-color" content="#F8FAFC">
+
+  <title>스마트 루틴 & 메모 v37</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/Sortable/1.15.0/Sortable.min.js"></script>
+  <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
+  <style>
+    html, body { overflow: hidden; width: 100%; height: 100%; margin: 0; padding: 0; background-color: #F8FAFC; overscroll-behavior-x: none; }
+    #viewport { width: 100vw; height: 100%; overflow: hidden; position: relative; }
+    #main-wrapper { display: flex; width: 200vw; height: 100%; transition: transform 0.3s cubic-bezier(0.4, 0, 0.2, 1); will-change: transform; }
+    .screen { flex: 0 0 100vw; width: 100vw; height: 100%; overflow-y: auto; padding-bottom: 140px; box-sizing: border-box; position: relative; }
+
+    .progress-blue { background-color: #3B82F6; transition: width 0.4s ease; }
+    .progress-red { background-color: #EF4444; transition: width 0.4s ease; }
+    .modal-active { display: flex !important; animation: fadeIn 0.1s ease-out; }
+    @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
+    
+    .folder-content { max-height: 0; opacity: 0; overflow: hidden; transition: all 0.2s ease-out; }
+    .folder-open .folder-content { max-height: 2000px; opacity: 1; transition: all 0.3s ease-in; padding-top: 4px; }
+    .folder-open .chevron { transform: rotate(180deg); }
+    
+    .handle { width: 40px; height: 100%; display: flex; align-items: center; justify-content: center; color: #CBD5E1; touch-action: none; flex-shrink: 0; cursor: grab; }
+    .handle:active { cursor: grabbing; }
+    .sortable-ghost { opacity: 0.3; background: #E2E8F0 !important; }
+    .sortable-drag { scale: 1.02; box-shadow: 0 10px 20px rgba(0,0,0,0.1); }
+    
+    .editable-text { user-select: none; -webkit-user-select: none; }
+    
+    #memo-textarea { width: 100%; height: calc(100vh - 180px); background: transparent; border: none; outline: none; resize: none; line-height: 1.6; padding: 10px; box-sizing: border-box; transition: background 0.2s; border-radius: 20px; }
+    .editing-mode #memo-textarea { background-color: #ffffff; border: 1px solid #E2E8F0; }
+    
+    .fixed-footer { position: fixed; bottom: 30px; left: 0; right: 0; padding: 0 16px; z-index: 100; display: flex; gap: 8px; pointer-events: none; transition: all 0.2s ease; }
+    .footer-btn { pointer-events: auto; flex: 1; background: white; border: 1px solid #E2E8F0; border-radius: 18px; padding: 10px 0; font-size: 10px; font-weight: 900; box-shadow: 0 10px 15px -3px rgba(0,0,0,0.08); display: flex; flex-direction: column; align-items: center; justify-content: center; }
+    .footer-btn i { font-size: 14px; margin-bottom: 3px; }
+    .footer-btn:active { scale: 0.95; background-color: #F8FAFC; }
+    .footer-hidden { opacity: 0; transform: translateY(30px); pointer-events: none; }
+    
+    .gesture-safe-zone { position: fixed; bottom: 0; left: 0; right: 0; height: 25px; background: transparent; z-index: 110; pointer-events: auto; }
+    #progress-percent { position: absolute; bottom: 12px; transform: translateX(-50%); transition: left 0.4s ease; white-space: nowrap; }
+    
+    #memo-settings-popup { transition: all 0.2s ease; transform: scale(0.9); opacity: 0; pointer-events: none; }
+    #memo-settings-popup.active { transform: scale(1); opacity: 1; pointer-events: auto; }
+
+    #memo-save-btn { display: none; margin-top: 10px; width: 100%; padding: 15px; background: #3B82F6; color: white; border-radius: 15px; font-weight: 900; font-size: 14px; border: none; }
+    .editing-mode #memo-save-btn { display: block; }
+  </style>
+</head>
+<body class="editing-mode-off" id="body-root">
+
+  <div id="viewport">
+    <div id="main-wrapper">
+      <div class="screen bg-[#F8FAFC]" id="routine-screen">
+        <div class="max-w-md mx-auto p-4 pt-6">
+          <div class="flex justify-between items-start mb-6 text-left">
+            <div class="text-left">
+              <h1 class="text-2xl font-black tracking-tight flex items-center gap-2">나의 루틴 
+                <span id="streak-display" class="text-orange-600 text-sm">🔥 0</span>
+                <span id="total-success-display" class="text-blue-700 text-sm">🏆 0</span>
+              </h1>
+              <p id="date-display" class="text-[10px] font-bold text-slate-400 uppercase tracking-widest mt-1 text-left"></p>
+            </div>
+            <button id="shift-badge" onclick="toggleShift()" class="px-4 py-2 rounded-full text-[10px] font-black shadow-md border-none outline-none"></button>
+          </div>
+
+          <div class="bg-white p-6 rounded-3xl shadow-sm mb-8 border border-slate-100 relative text-left">
+            <div class="flex justify-between text-[9px] font-black mb-6 text-slate-400 px-1 uppercase tracking-wider">
+              <span>달성</span>
+              <span>미달성</span>
+            </div>
+            <div class="h-[3px] w-full bg-slate-100 rounded-full relative flex items-center">
+              <div id="bar-blue" class="progress-blue h-full rounded-full z-10"></div>
+              <div id="bar-red" class="progress-red h-full absolute right-0 rounded-full"></div>
+              <span id="progress-percent" class="text-[11px] font-black text-blue-600">0%</span>
+            </div>
+          </div>
+          <div id="folder-container" class="space-y-2"></div>
+        </div>
+      </div>
+
+      <div class="screen bg-white" id="memo-screen">
+        <div class="max-w-md mx-auto p-6 pt-10">
+          <div class="flex justify-between items-center mb-6 relative text-left">
+            <h2 class="text-2xl font-black text-slate-800 tracking-tight text-left">자유 메모</h2>
+            <div class="relative">
+              <button onclick="toggleMemoSettings()" class="w-10 h-10 flex items-center justify-center text-slate-400 border-none outline-none bg-transparent">
+                <i class="fa-solid fa-bars text-lg"></i>
+              </button>
+              <div id="memo-settings-popup" class="absolute right-0 top-12 w-48 bg-white rounded-2xl shadow-2xl border border-slate-100 p-4 z-50 text-left">
+                <div class="flex flex-col gap-4">
+                  <button onclick="enableMemoEdit()" class="w-full py-2 bg-blue-50 text-blue-600 rounded-xl font-black text-[11px] border-none"><i class="fa-solid fa-pen-to-square mr-1"></i> 수정하기</button>
+                  <hr class="border-slate-50">
+                  <label class="text-[10px] font-black text-slate-400 uppercase tracking-widest text-left">글자 크기 조절</label>
+                  <div class="flex items-center gap-3">
+                    <input type="range" id="font-size-slider" min="12" max="30" step="1" value="16" class="flex-1 accent-blue-500" oninput="updateFontSize(this.value)">
+                    <span id="font-size-label" class="text-[11px] font-bold text-blue-600 w-5 text-center">16</span>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+          <textarea id="memo-textarea" readonly placeholder="메뉴에서 수정하기를 눌러주세요..." oninput="updateMemo(this.value)"></textarea>
+          <button id="memo-save-btn" onclick="lockMemo()"><i class="fa-solid fa-check mr-2"></i> 수정 완료 및 저장</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="fixed-footer" id="main-footer">
+    <button onclick="openModal('folder')" class="footer-btn text-slate-800"><i class="fa-solid fa-folder-plus text-blue-500"></i> 폴더 추가</button>
+    <button onclick="openModal('divider')" class="footer-btn text-slate-500"><i class="fa-solid fa-grip-lines text-slate-400"></i> 구분선 추가</button>
+    <div class="flex-1 relative pointer-events-auto">
+      <button onclick="toggleMenu()" class="w-full footer-btn text-slate-500"><i class="fa-solid fa-bars"></i> 메뉴</button>
+      <div id="side-menu" class="hidden absolute bottom-16 right-0 w-44 bg-white rounded-3xl shadow-2xl border border-slate-200 p-1.5 z-50 flex flex-col gap-1 text-center">
+        <button onclick="manualResetTasks()" class="text-blue-600 text-[10px] py-3 font-black hover:bg-blue-50 rounded-2xl flex items-center justify-center gap-2 border-none bg-white"><i class="fa-solid fa-eraser"></i> 체크리스트 초기화</button>
+        <hr class="border-slate-100 my-0.5">
+        <button onclick="saveToServer()" class="text-slate-700 text-[10px] py-3 font-bold hover:bg-slate-50 rounded-2xl flex items-center justify-center gap-2 border-none bg-white"><i class="fa-solid fa-cloud-arrow-up text-blue-400"></i> 서버 저장</button>
+        <button onclick="loadFromServer()" class="text-slate-700 text-[10px] py-3 font-bold hover:bg-slate-50 rounded-2xl flex items-center justify-center gap-2 border-none bg-white"><i class="fa-solid fa-cloud-arrow-down text-indigo-400"></i> 불러오기</button>
+        <hr class="border-slate-100 my-0.5">
+        <button onclick="resetStats()" class="text-red-500 text-[10px] py-3 font-black hover:bg-red-50 rounded-2xl flex items-center justify-center gap-2 border-none bg-white"><i class="fa-solid fa-rotate"></i> 통계 초기화</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="gesture-safe-zone"></div>
+
+  <div id="input-modal" class="hidden fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-[200] items-center justify-center p-6">
+    <div class="modal-content bg-white w-full max-w-xs rounded-3xl p-6 shadow-2xl">
+      <h3 id="modal-title" class="text-base font-black mb-4 text-left">입력</h3>
+      <div id="task-extra-options" class="hidden mb-4 space-y-3 text-left">
+        <label class="block text-[10px] font-black text-slate-400 uppercase text-left">수행 빈도</label>
+        <div class="flex gap-2"><button onclick="setFreq('daily')" id="freq-daily" class="flex-1 py-2 rounded-lg text-[10px] font-bold border-2 border-blue-500 bg-blue-50 text-blue-600">매일</button><button onclick="promptWeeklyFreq()" id="freq-weekly" class="flex-1 py-2 rounded-lg text-[10px] font-bold border-2 border-transparent bg-slate-100 text-slate-400">주 n회</button></div>
+      </div>
+      <input type="text" id="modal-input" class="w-full bg-slate-100 border-none rounded-xl p-3 text-sm focus:ring-2 focus:ring-blue-500 mb-6 outline-none">
+      <div class="flex gap-2"><button onclick="closeModal()" class="flex-1 py-3 bg-slate-200 text-slate-600 rounded-xl font-bold text-sm text-center">취소</button><button id="modal-confirm" class="flex-1 py-3 bg-blue-600 text-white rounded-xl font-bold text-sm text-center">저장</button></div>
+    </div>
+  </div>
+
+  <script>
+    const DB_KEY = 'v37_final_db';
+    let db = JSON.parse(localStorage.getItem(DB_KEY)) || { items: [], tasks: [], shift: 'night', openFolders: [], stats: { streak: 0, totalSuccess: 0, lastSuccessDate: '' }, memo: '', memoFontSize: 16, serverUrl: '' };
+    let tempFreq = 'daily', pressTimer, touchStartX = 0, currentScreen = 0;
+
+    function commit() { localStorage.setItem(DB_KEY, JSON.stringify(db)); render(); }
+    function getTodayStr() { return new Date().toISOString().split('T')[0]; }
+
+    function manualResetTasks() {
+      if(confirm('모든 루틴의 체크를 초기화할까요?')) {
+        db.tasks.forEach(t => { t.status = 'todo'; });
+        commit();
+        document.getElementById('side-menu').classList.add('hidden');
+        alert('초기화되었습니다.');
+      }
+    }
+
+    window.addEventListener('touchstart', e => { touchStartX = e.changedTouches[0].screenX; }, {passive: true});
+    window.addEventListener('touchend', e => {
+      if (!document.getElementById('memo-textarea').readOnly) return;
+      const diff = touchStartX - e.changedTouches[0].screenX;
+      if (Math.abs(diff) > 70) {
+        if (diff > 0 && currentScreen === 0) switchScreen(1);
+        else if (diff < 0 && currentScreen === 1) switchScreen(0);
+      }
+    });
+
+    function switchScreen(idx) {
+      currentScreen = idx;
+      document.getElementById('main-wrapper').style.transform = `translateX(-${idx * 100}vw)`;
+      const footer = document.getElementById('main-footer');
+      if (idx === 1) footer.classList.add('footer-hidden');
+      else { footer.classList.remove('footer-hidden'); document.getElementById('memo-settings-popup').classList.remove('active'); }
+    }
+
+    function enableMemoEdit() { 
+      const el = document.getElementById('memo-textarea');
+      el.readOnly = false;
+      document.getElementById('body-root').className = "editing-mode";
+      document.getElementById('memo-settings-popup').classList.remove('active');
+      el.focus();
+    }
+    function lockMemo() { 
+      const el = document.getElementById('memo-textarea');
+      el.readOnly = true; 
+      document.getElementById('body-root').className = "editing-mode-off";
+    }
+    function updateMemo(val) { db.memo = val; localStorage.setItem(DB_KEY, JSON.stringify(db)); }
+    function updateFontSize(val) { db.memoFontSize = val; document.getElementById('memo-textarea').style.fontSize = val + 'px'; document.getElementById('font-size-label').innerText = val; localStorage.setItem(DB_KEY, JSON.stringify(db)); }
+
+    function watchLongPress(el, callback) {
+      const start = (e) => { if (e.type === 'click' || (e.touches && e.touches.length > 1)) return; pressTimer = setTimeout(() => { callback(); pressTimer = null; }, 600); };
+      const cancel = () => clearTimeout(pressTimer);
+      el.addEventListener('mousedown', start); el.addEventListener('touchstart', start, {passive: true});
+      el.addEventListener('mouseup', cancel); el.addEventListener('touchend', cancel); el.addEventListener('mouseleave', cancel);
+    }
+
+    function updateSharedStreak() {
+      const today = getTodayStr(), yesterday = new Date(new Date().setDate(new Date().getDate() - 1)).toISOString().split('T')[0];
+      const checkDone = (s) => { const ts = db.tasks.filter(t => t.shift === s); return ts.length > 0 && ts.every(t => (t.freq === 'daily' && (t.status === 'done' || t.status === 'skip')) || (typeof t.freq === 'number' && t.lastDoneDate === today)); };
+      if ((checkDone('day') || checkDone('night')) && db.stats.lastSuccessDate !== today) { db.stats.streak = (db.stats.lastSuccessDate === yesterday) ? db.stats.streak + 1 : 1; db.stats.totalSuccess += 1; db.stats.lastSuccessDate = today; }
+      else if (!(checkDone('day') || checkDone('night')) && db.stats.lastSuccessDate === today) { db.stats.streak = Math.max(0, db.stats.streak - 1); db.stats.totalSuccess = Math.max(0, db.stats.totalSuccess - 1); db.stats.lastSuccessDate = yesterday; }
+    }
+
+    function render() {
+      const container = document.getElementById('folder-container'); container.innerHTML = '';
+      const today = getTodayStr(), curItems = db.items.filter(i => i.shift === db.shift), curTasks = db.tasks.filter(t => t.shift === db.shift);
+      const total = curTasks.length, done = curTasks.filter(t => (t.freq === 'daily' && (t.status === 'done' || t.status === 'skip')) || (typeof t.freq === 'number' && t.lastDoneDate === today)).length;
+      const blue = total > 0 ? (done / total) * 100 : 0;
+      
+      updateSharedStreak();
+      document.getElementById('bar-blue').style.width = blue + '%'; document.getElementById('bar-red').style.width = (total > 0 ? 100 - blue : 0) + '%';
+      const pEl = document.getElementById('progress-percent'); pEl.innerText = `${Math.round(blue)}%`; pEl.style.left = blue + '%';
+      document.getElementById('streak-display').innerText = `🔥 ${db.stats.streak}`; document.getElementById('total-success-display').innerText = `🏆 ${db.stats.totalSuccess}`;
+      
+      const memoEl = document.getElementById('memo-textarea'); memoEl.value = db.memo || ""; memoEl.style.fontSize = (db.memoFontSize || 16) + 'px';
+      document.getElementById('font-size-label').innerText = db.memoFontSize || 16; document.getElementById('font-size-slider').value = db.memoFontSize || 16;
+
+      if (curItems.length === 0) container.innerHTML = `<div class="py-12 text-center text-slate-300 opacity-40"><i class="fa-solid fa-folder-open text-4xl mb-2"></i><p class="text-[10px] font-bold">루틴을 추가하세요!</p></div>`;
+
+      curItems.forEach(item => {
+        if(item.type === 'divider') {
+          const dDiv = document.createElement('div'); dDiv.dataset.id = item.id; dDiv.className = "flex items-center py-3";
+          dDiv.innerHTML = `<div class="handle"><i class="fa-solid fa-grip-vertical text-[10px]"></i></div><div class="h-[0.5px] bg-slate-200 flex-1"></div><span class="editable-text text-[9px] font-black text-slate-400 uppercase px-3 tracking-tighter text-left">${item.name}</span><div class="h-[0.5px] bg-slate-200 flex-1"></div><button onclick="deleteItem('${item.id}')" class="w-10 text-slate-300 border-none bg-transparent p-0"><i class="fa-solid fa-trash-can text-[10px]"></i></button>`;
+          watchLongPress(dDiv.querySelector('.editable-text'), () => openModal('editItem', item.id));
+          container.appendChild(dDiv);
+        } else {
+          const fTasks = curTasks.filter(t => String(t.folderId) === String(item.id)), isOpen = db.openFolders.includes(String(item.id));
+          const isFDone = fTasks.length > 0 && fTasks.every(t => t.status !== 'todo' || (typeof t.freq === 'number' && t.lastDoneDate === today));
+          const fDiv = document.createElement('div'); fDiv.dataset.id = item.id; fDiv.className = `bg-white rounded-3xl border border-slate-100 overflow-hidden ${isOpen ? 'folder-open mb-2 shadow-sm' : ''}`;
+          fDiv.innerHTML = `<div class="flex justify-between items-center cursor-pointer h-12" onclick="toggleFolder('${item.id}')"><div class="flex items-center h-full overflow-hidden text-left"><div class="handle" onclick="event.stopPropagation()"><i class="fa-solid fa-grip-vertical text-[10px]"></i></div><h2 class="editable-text text-[12px] font-black text-slate-800 truncate text-left">${item.name}</h2>${isFDone ? '<span class="text-[8px] bg-blue-600 text-white px-2 py-0.5 rounded-full font-black ml-2 shrink-0">완료</span>' : ''}</div><div class="flex items-center h-full"><button onclick="event.stopPropagation(); deleteItem('${item.id}')" class="w-10 text-slate-200 border-none bg-transparent"><i class="fa-solid fa-trash-can text-[10px]"></i></button><div class="w-10 text-center"><i class="fa-solid fa-chevron-down text-slate-300 text-[9px] chevron transition-transform"></i></div></div></div><div class="folder-content px-4 pb-4" id="tasks-${item.id}"><div class="space-y-1 border-t border-slate-50 pt-3">${fTasks.map(t => {
+            const isDoneT = (t.freq === 'daily' && t.status === 'done') || (typeof t.freq === 'number' && t.lastDoneDate === today);
+            return `<div class="flex items-center justify-between py-1 h-11" data-taskid="${t.id}"><div class="handle -ml-4"><i class="fa-solid fa-grip-vertical text-[9px]"></i></div><div class="flex-1 pr-2 overflow-hidden text-left"><span class="editable-text text-[12px] font-bold block truncate text-left ${isDoneT || t.status === 'skip' || t.status === 'failed' ? 'line-through text-slate-300 font-normal' : 'text-slate-700'}">${t.content}</span>${typeof t.freq === 'number' ? `<span class="text-[8px] font-black text-blue-500 uppercase">주간 ${t.weeklyCount}/${t.freq}회</span>` : ''}</div><div class="flex gap-1 items-center"><button onclick="updateStatus('${t.id}', 'done')" class="w-8 h-8 rounded-xl border-none ${isDoneT ? 'bg-blue-600 text-white' : 'bg-slate-50 text-slate-300'}"><i class="fa-solid fa-check text-[10px]"></i></button><button onclick="updateStatus('${t.id}', 'failed')" class="w-8 h-8 rounded-xl border-none ${t.status === 'failed' ? 'bg-red-500 text-white' : 'bg-slate-50 text-slate-300'}"><i class="fa-solid fa-xmark text-[10px]"></i></button><button onclick="updateStatus('${t.id}', 'skip')" class="w-8 h-8 rounded-xl border-none ${t.status === 'skip' ? 'bg-slate-800 text-white' : 'bg-slate-50 text-slate-300'}"><i class="fa-solid fa-forward-step text-[9px]"></i></button><button onclick="deleteTask('${t.id}')" class="w-8 h-8 text-slate-200 border-none bg-transparent"><i class="fa-solid fa-trash-can text-[10px]"></i></button></div></div>`;
+          }).join('')}<button onclick="openModal('task', '${item.id}')" class="w-full py-3 mt-2 bg-slate-50 rounded-2xl text-slate-400 text-[10px] font-black border border-dashed border-slate-200 active:bg-slate-100">+ 루틴 추가</button></div></div>`;
+          
+          watchLongPress(fDiv.querySelector('.editable-text'), () => openModal('editItem', item.id));
+          fDiv.querySelectorAll('[data-taskid]').forEach(tel => { watchLongPress(tel.querySelector('.editable-text'), () => openModal('editTask', tel.dataset.taskid)); });
+          container.appendChild(fDiv); initSortableTasks(item.id);
+        }
+      });
+      initSortableItems();
+    }
+
+    // --- 나머지 로직 ---
+    function toggleMemoSettings() { document.getElementById('memo-settings-popup').classList.toggle('active'); }
+    function toggleShift() { db.shift = (db.shift === 'night') ? 'day' : 'night'; commit(); initHeader(); }
+    function toggleFolder(id) { const sid = String(id); if(db.openFolders.includes(sid)) db.openFolders = db.openFolders.filter(f => f !== sid); else db.openFolders.push(sid); commit(); }
+    function deleteItem(id) { if(confirm('삭제할까요?')) { db.items = db.items.filter(i => String(i.id) !== String(id)); db.tasks = db.tasks.filter(t => String(t.folderId) !== String(id)); commit(); } }
+    function deleteTask(id) { if(confirm('할 일을 삭제할까요?')) { db.tasks = db.tasks.filter(t => String(t.id) !== String(id)); commit(); } }
+    
+    // --- 통계 초기화 2중 경고 ---
+    function resetStats() { 
+      if(confirm('통계를 초기화하시겠습니까?')) { 
+        if(confirm('정말로 초기화하시겠습니까?\n\n과거 기록이나 연속 달성 기록이 모두 영구적으로 삭제됩니다.')) {
+           db.stats = { streak: 0, totalSuccess: 0, lastSuccessDate: '' }; 
+           commit(); 
+           alert('초기화되었습니다.');
+        }
+      } 
+    }
+    
+    function closeModal() { document.getElementById('input-modal').classList.remove('modal-active'); }
+    function toggleMenu() { document.getElementById('side-menu').classList.toggle('hidden'); }
+    function setFreq(f) { tempFreq = f; document.getElementById('freq-daily').className = f === 'daily' ? 'flex-1 py-2 rounded-lg text-[10px] font-black border-2 border-blue-500 bg-blue-50 text-blue-600' : 'flex-1 py-2 rounded-lg text-[10px] font-black border-2 border-transparent bg-slate-100 text-slate-400'; }
+    function promptWeeklyFreq() { const count = prompt("주간 횟수(1~7):", "1"), num = parseInt(count); if(num >= 1 && num <= 7) { tempFreq = num; document.getElementById('freq-weekly').innerText = `주 ${num}회`; setFreq(num); } }
+    function updateStatus(id, s) {
+      const t = db.tasks.find(x => String(x.id) === String(id)); if(!t) return;
+      const today = getTodayStr(), curS = (typeof t.freq === 'number' && t.lastDoneDate === today) ? 'done' : t.status, newS = (curS === s) ? 'todo' : s;
+      if(typeof t.freq === 'number') {
+        if(newS === 'done') { if (t.lastDoneDate !== today) { t.weeklyCount += 1; t.lastDoneDate = today; } t.status = 'done'; }
+        else if (newS === 'failed') { if (t.lastDoneDate === today) { t.weeklyCount = Math.max(0, t.weeklyCount - 1); t.lastDoneDate = ''; } t.status = 'failed'; }
+        else if (newS === 'skip') { if (t.lastDoneDate === today) { t.weeklyCount = Math.max(0, t.weeklyCount - 1); t.lastDoneDate = ''; } t.status = 'skip'; }
+        else { if (t.lastDoneDate === today) { t.weeklyCount = Math.max(0, t.weeklyCount - 1); t.lastDoneDate = ''; } t.status = 'todo'; }
+      } else t.status = newS;
+      commit();
+    }
+    async function saveToServer() { if(!navigator.onLine) return alert("오프라인!"); const url = prompt("앱 URL:", db.serverUrl || ""); if(!url) return; db.serverUrl = url; try { await fetch(url, { method: "POST", mode: "no-cors", body: JSON.stringify(db) }); alert("서버 저장 완료!"); } catch(e) { alert("저장 실패!"); } commit(); }
+    async function loadFromServer() { if(!navigator.onLine) return alert("오프라인!"); const url = prompt("URL:", db.serverUrl || ""); if(!url) return; db.serverUrl = url; try { const res = await fetch(url); const data = await res.json(); if(data && data.items) { db = data; alert("데이터 로드 완료!"); commit(); } } catch(e) { alert("로드 실패!"); } }
+    function openModal(mode, tId = null) {
+      const modal = document.getElementById('input-modal'), input = document.getElementById('modal-input'), title = document.getElementById('modal-title'), options = document.getElementById('task-extra-options');
+      options.classList.add('hidden'); input.value = ''; modal.classList.add('modal-active'); input.focus();
+      if (mode === 'folder') title.innerText = "폴더 생성"; else if (mode === 'divider') title.innerText = "구분선 생성"; else if (mode === 'task') { title.innerText = "루틴 추가"; options.classList.remove('hidden'); setFreq('daily'); }
+      else if (mode === 'editItem') { const item = db.items.find(i => String(i.id) === String(tId)); title.innerText = "이름 수정"; input.value = item.name; }
+      else if (mode === 'editTask') { const task = db.tasks.find(t => String(t.id) === String(tId)); title.innerText = "내용 수정"; input.value = task.content; }
+      document.getElementById('modal-confirm').onclick = () => {
+        const val = input.value.trim(); if (!val) return;
+        if (mode === 'editItem') db.items.find(i => String(i.id) === String(tId)).name = val;
+        else if (mode === 'editTask') db.tasks.find(t => String(t.id) === String(tId)).content = val;
+        else if (mode === 'folder' || mode === 'divider') { const nId = String(Date.now()); db.items.push({ id: nId, name: val, type: mode, shift: db.shift }); if (mode === 'folder') db.openFolders.push(nId); }
+        else db.tasks.push({ id: String(Date.now()), folderId: String(tId), content: val, status: 'todo', shift: db.shift, freq: tempFreq, weeklyCount: 0, lastDoneDate: '' });
+        closeModal(); commit();
+      };
+    }
+    function initHeader() { const b = document.getElementById('shift-badge'); b.innerText = db.shift === 'night' ? "🌙 야간 근무" : "☀️ 주간 근무"; b.className = `px-4 py-2 rounded-full text-[10px] font-black shadow-md ${db.shift === 'night' ? 'bg-indigo-950 text-white' : 'bg-amber-400 text-amber-950'}`; document.getElementById('date-display').innerText = new Date().toLocaleDateString('ko-KR', { month: 'long', day: 'numeric', weekday: 'short' }); }
+    function initSortableItems() { 
+      const el = document.getElementById('folder-container'); if (Sortable.get(el)) Sortable.get(el).destroy(); 
+      new Sortable(el, { handle: '.handle', delay: 800, delayOnTouchOnly: true, touchStartThreshold: 5, animation: 250, ghostClass: 'sortable-ghost', onEnd: function() {
+        const ids = Array.from(el.querySelectorAll(':scope > div')).map(c => c.dataset.id), cur = db.items.filter(i => i.shift === db.shift), oth = db.items.filter(i => i.shift !== db.shift);
+        db.items = [...oth, ...ids.map(id => cur.find(i => String(i.id) === String(id))).filter(Boolean)]; localStorage.setItem(DB_KEY, JSON.stringify(db));
+      }}); 
+    }
+    function initSortableTasks(fId) { 
+      const el = document.getElementById(`tasks-${fId}`); if(!el) return; const target = el.querySelector('.space-y-1'); if (Sortable.get(target)) Sortable.get(target).destroy(); 
+      new Sortable(target, { handle: '.handle', delay: 800, delayOnTouchOnly: true, touchStartThreshold: 5, animation: 250, ghostClass: 'sortable-ghost', onEnd: function() {
+        const ids = Array.from(target.querySelectorAll('[data-taskid]')).map(it => it.dataset.taskid), cur = db.tasks.filter(t => String(t.folderId) === String(fId) && t.shift === db.shift), oth = db.tasks.filter(t => String(t.folderId) !== String(fId) || t.shift !== db.shift);
+        db.tasks = [...oth, ...ids.map(id => cur.find(t => String(t.id) === String(id))).filter(Boolean)]; localStorage.setItem(DB_KEY, JSON.stringify(db)); render();
+      }}); 
+    }
+    window.onload = () => { initHeader(); render(); };
+  </script>
+</body>
+</html>
