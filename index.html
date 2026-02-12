@@ -9,7 +9,7 @@
   <link rel="apple-touch-icon" href="icon.png">
   <meta name="theme-color" content="#F8FAFC">
 
-  <title>스마트 루틴 & 메모 v37</title>
+  <title>스마트 루틴 & 메모 v38</title>
   <script src="https://cdn.tailwindcss.com"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/Sortable/1.15.0/Sortable.min.js"></script>
   <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
@@ -145,72 +145,93 @@
   </div>
 
   <script>
-    const DB_KEY = 'v37_final_db';
+    const DB_KEY = 'v38_final_db';
     let db = JSON.parse(localStorage.getItem(DB_KEY)) || { items: [], tasks: [], shift: 'night', openFolders: [], stats: { streak: 0, totalSuccess: 0, lastSuccessDate: '' }, memo: '', memoFontSize: 16, serverUrl: '' };
     let tempFreq = 'daily', pressTimer, touchStartX = 0, currentScreen = 0;
 
     function commit() { localStorage.setItem(DB_KEY, JSON.stringify(db)); render(); }
     function getTodayStr() { return new Date().toISOString().split('T')[0]; }
 
+    // --- 수동 초기화: 상태만 초기화하고 통계는 건드리지 않음 ---
     function manualResetTasks() {
-      if(confirm('모든 루틴의 체크를 초기화할까요?')) {
-        db.tasks.forEach(t => { t.status = 'todo'; });
+      if(confirm('모든 루틴의 체크를 초기화할까요?\n(통계는 유지됩니다)')) {
+        db.tasks.forEach(t => { 
+          // 주간 루틴은 오늘 날짜만 지우고 횟수는 놔둘 수도 있지만, 
+          // '초기화'의 의미상 '오늘 안 한 상태'로 돌립니다.
+          if (typeof t.freq === 'number' && t.lastDoneDate === getTodayStr()) {
+             // 만약 오늘 '완료'해서 카운트가 올라갔었다면 다시 내립니다.
+             if(t.status === 'done') t.weeklyCount = Math.max(0, t.weeklyCount - 1);
+             t.lastDoneDate = ''; 
+          }
+          t.status = 'todo'; 
+        });
         commit();
         document.getElementById('side-menu').classList.add('hidden');
         alert('초기화되었습니다.');
       }
     }
 
-    window.addEventListener('touchstart', e => { touchStartX = e.changedTouches[0].screenX; }, {passive: true});
-    window.addEventListener('touchend', e => {
-      if (!document.getElementById('memo-textarea').readOnly) return;
-      const diff = touchStartX - e.changedTouches[0].screenX;
-      if (Math.abs(diff) > 70) {
-        if (diff > 0 && currentScreen === 0) switchScreen(1);
-        else if (diff < 0 && currentScreen === 1) switchScreen(0);
-      }
-    });
-
-    function switchScreen(idx) {
-      currentScreen = idx;
-      document.getElementById('main-wrapper').style.transform = `translateX(-${idx * 100}vw)`;
-      const footer = document.getElementById('main-footer');
-      if (idx === 1) footer.classList.add('footer-hidden');
-      else { footer.classList.remove('footer-hidden'); document.getElementById('memo-settings-popup').classList.remove('active'); }
-    }
-
-    function enableMemoEdit() { 
-      const el = document.getElementById('memo-textarea');
-      el.readOnly = false;
-      document.getElementById('body-root').className = "editing-mode";
-      document.getElementById('memo-settings-popup').classList.remove('active');
-      el.focus();
-    }
-    function lockMemo() { 
-      const el = document.getElementById('memo-textarea');
-      el.readOnly = true; 
-      document.getElementById('body-root').className = "editing-mode-off";
-    }
-    function updateMemo(val) { db.memo = val; localStorage.setItem(DB_KEY, JSON.stringify(db)); }
-    function updateFontSize(val) { db.memoFontSize = val; document.getElementById('memo-textarea').style.fontSize = val + 'px'; document.getElementById('font-size-label').innerText = val; localStorage.setItem(DB_KEY, JSON.stringify(db)); }
-
-    function watchLongPress(el, callback) {
-      const start = (e) => { if (e.type === 'click' || (e.touches && e.touches.length > 1)) return; pressTimer = setTimeout(() => { callback(); pressTimer = null; }, 600); };
-      const cancel = () => clearTimeout(pressTimer);
-      el.addEventListener('mousedown', start); el.addEventListener('touchstart', start, {passive: true});
-      el.addEventListener('mouseup', cancel); el.addEventListener('touchend', cancel); el.addEventListener('mouseleave', cancel);
-    }
-
+    // --- 통계 로직 수정: 체크 해제 시 통계 감소 방지 ---
     function updateSharedStreak() {
       const today = getTodayStr(), yesterday = new Date(new Date().setDate(new Date().getDate() - 1)).toISOString().split('T')[0];
-      const checkDone = (s) => { const ts = db.tasks.filter(t => t.shift === s); return ts.length > 0 && ts.every(t => (t.freq === 'daily' && (t.status === 'done' || t.status === 'skip')) || (typeof t.freq === 'number' && t.lastDoneDate === today)); };
-      if ((checkDone('day') || checkDone('night')) && db.stats.lastSuccessDate !== today) { db.stats.streak = (db.stats.lastSuccessDate === yesterday) ? db.stats.streak + 1 : 1; db.stats.totalSuccess += 1; db.stats.lastSuccessDate = today; }
-      else if (!(checkDone('day') || checkDone('night')) && db.stats.lastSuccessDate === today) { db.stats.streak = Math.max(0, db.stats.streak - 1); db.stats.totalSuccess = Math.max(0, db.stats.totalSuccess - 1); db.stats.lastSuccessDate = yesterday; }
+      const checkDone = (s) => { 
+        const ts = db.tasks.filter(t => t.shift === s); 
+        // 주간 루틴 조건 수정: status가 'skip'이어도 달성으로 인정 (lastDoneDate가 오늘이면 OK)
+        return ts.length > 0 && ts.every(t => (t.freq === 'daily' && (t.status === 'done' || t.status === 'skip')) || (typeof t.freq === 'number' && t.lastDoneDate === today)); 
+      };
+      
+      // 달성 시 증가 로직
+      if ((checkDone('day') || checkDone('night')) && db.stats.lastSuccessDate !== today) { 
+        db.stats.streak = (db.stats.lastSuccessDate === yesterday) ? db.stats.streak + 1 : 1; 
+        db.stats.totalSuccess += 1; 
+        db.stats.lastSuccessDate = today; 
+      }
+      // 체크 해제 시 감소 로직 '삭제' (요청사항 반영)
+      // else if (!(checkDone...) ...) { ... }  <-- 이 부분을 삭제하여 통계가 줄어들지 않게 함
     }
 
+    // --- 상태 업데이트 로직 개선: 주간 루틴 스킵 처리 ---
+    function updateStatus(id, s) {
+      const t = db.tasks.find(x => String(x.id) === String(id)); if(!t) return;
+      const today = getTodayStr();
+      
+      // 주간 루틴 로직 변경
+      if(typeof t.freq === 'number') {
+        const isDoneToday = t.lastDoneDate === today;
+        // 토글 로직 (이미 같은 상태면 todo로 복귀)
+        const newS = (t.status === s && isDoneToday) ? 'todo' : s;
+
+        if (newS === 'done') {
+           if (!isDoneToday) { t.weeklyCount += 1; t.lastDoneDate = today; }
+           // 이미 오늘 skip이었다가 done으로 바꾸면 카운트만 증가 (날짜는 이미 오늘)
+           else if (t.status === 'skip') { t.weeklyCount += 1; }
+        } 
+        else if (newS === 'skip') {
+           // 스킵은 달성도는 오르지만(lastDoneDate=today), 횟수(weeklyCount)는 안 오름
+           if (!isDoneToday) { t.lastDoneDate = today; } 
+           // 만약 done이었다가 skip으로 바꾸면 횟수 차감
+           else if (t.status === 'done') { t.weeklyCount = Math.max(0, t.weeklyCount - 1); }
+        }
+        else { // todo, failed 등으로 갈 때
+           if (isDoneToday) {
+             // done에서 왔으면 횟수 차감
+             if(t.status === 'done') t.weeklyCount = Math.max(0, t.weeklyCount - 1);
+             t.lastDoneDate = ''; 
+           }
+        }
+        t.status = newS;
+      } else {
+        // 일일 루틴 로직
+        t.status = (t.status === s) ? 'todo' : s;
+      }
+      commit();
+    }
+
+    // --- 기존 로직 유지 ---
     function render() {
       const container = document.getElementById('folder-container'); container.innerHTML = '';
       const today = getTodayStr(), curItems = db.items.filter(i => i.shift === db.shift), curTasks = db.tasks.filter(t => t.shift === db.shift);
+      // 진행도 계산 시 주간 루틴도 오늘 날짜 찍혀있으면 달성으로 인정
       const total = curTasks.length, done = curTasks.filter(t => (t.freq === 'daily' && (t.status === 'done' || t.status === 'skip')) || (typeof t.freq === 'number' && t.lastDoneDate === today)).length;
       const blue = total > 0 ? (done / total) * 100 : 0;
       
@@ -247,14 +268,28 @@
       initSortableItems();
     }
 
-    // --- 나머지 로직 ---
+    // --- 나머지 제어 함수 ---
+    window.addEventListener('touchstart', e => { touchStartX = e.changedTouches[0].screenX; }, {passive: true});
+    window.addEventListener('touchend', e => {
+      if (!document.getElementById('memo-textarea').readOnly) return;
+      const diff = touchStartX - e.changedTouches[0].screenX;
+      if (Math.abs(diff) > 70) {
+        if (diff > 0 && currentScreen === 0) switchScreen(1);
+        else if (diff < 0 && currentScreen === 1) switchScreen(0);
+      }
+    });
+    function switchScreen(idx) {
+      currentScreen = idx;
+      document.getElementById('main-wrapper').style.transform = `translateX(-${idx * 100}vw)`;
+      const footer = document.getElementById('main-footer');
+      if (idx === 1) footer.classList.add('footer-hidden');
+      else { footer.classList.remove('footer-hidden'); document.getElementById('memo-settings-popup').classList.remove('active'); }
+    }
     function toggleMemoSettings() { document.getElementById('memo-settings-popup').classList.toggle('active'); }
     function toggleShift() { db.shift = (db.shift === 'night') ? 'day' : 'night'; commit(); initHeader(); }
     function toggleFolder(id) { const sid = String(id); if(db.openFolders.includes(sid)) db.openFolders = db.openFolders.filter(f => f !== sid); else db.openFolders.push(sid); commit(); }
     function deleteItem(id) { if(confirm('삭제할까요?')) { db.items = db.items.filter(i => String(i.id) !== String(id)); db.tasks = db.tasks.filter(t => String(t.folderId) !== String(id)); commit(); } }
     function deleteTask(id) { if(confirm('할 일을 삭제할까요?')) { db.tasks = db.tasks.filter(t => String(t.id) !== String(id)); commit(); } }
-    
-    // --- 통계 초기화 2중 경고 ---
     function resetStats() { 
       if(confirm('통계를 초기화하시겠습니까?')) { 
         if(confirm('정말로 초기화하시겠습니까?\n\n과거 기록이나 연속 달성 기록이 모두 영구적으로 삭제됩니다.')) {
@@ -264,22 +299,10 @@
         }
       } 
     }
-    
     function closeModal() { document.getElementById('input-modal').classList.remove('modal-active'); }
     function toggleMenu() { document.getElementById('side-menu').classList.toggle('hidden'); }
     function setFreq(f) { tempFreq = f; document.getElementById('freq-daily').className = f === 'daily' ? 'flex-1 py-2 rounded-lg text-[10px] font-black border-2 border-blue-500 bg-blue-50 text-blue-600' : 'flex-1 py-2 rounded-lg text-[10px] font-black border-2 border-transparent bg-slate-100 text-slate-400'; }
     function promptWeeklyFreq() { const count = prompt("주간 횟수(1~7):", "1"), num = parseInt(count); if(num >= 1 && num <= 7) { tempFreq = num; document.getElementById('freq-weekly').innerText = `주 ${num}회`; setFreq(num); } }
-    function updateStatus(id, s) {
-      const t = db.tasks.find(x => String(x.id) === String(id)); if(!t) return;
-      const today = getTodayStr(), curS = (typeof t.freq === 'number' && t.lastDoneDate === today) ? 'done' : t.status, newS = (curS === s) ? 'todo' : s;
-      if(typeof t.freq === 'number') {
-        if(newS === 'done') { if (t.lastDoneDate !== today) { t.weeklyCount += 1; t.lastDoneDate = today; } t.status = 'done'; }
-        else if (newS === 'failed') { if (t.lastDoneDate === today) { t.weeklyCount = Math.max(0, t.weeklyCount - 1); t.lastDoneDate = ''; } t.status = 'failed'; }
-        else if (newS === 'skip') { if (t.lastDoneDate === today) { t.weeklyCount = Math.max(0, t.weeklyCount - 1); t.lastDoneDate = ''; } t.status = 'skip'; }
-        else { if (t.lastDoneDate === today) { t.weeklyCount = Math.max(0, t.weeklyCount - 1); t.lastDoneDate = ''; } t.status = 'todo'; }
-      } else t.status = newS;
-      commit();
-    }
     async function saveToServer() { if(!navigator.onLine) return alert("오프라인!"); const url = prompt("앱 URL:", db.serverUrl || ""); if(!url) return; db.serverUrl = url; try { await fetch(url, { method: "POST", mode: "no-cors", body: JSON.stringify(db) }); alert("서버 저장 완료!"); } catch(e) { alert("저장 실패!"); } commit(); }
     async function loadFromServer() { if(!navigator.onLine) return alert("오프라인!"); const url = prompt("URL:", db.serverUrl || ""); if(!url) return; db.serverUrl = url; try { const res = await fetch(url); const data = await res.json(); if(data && data.items) { db = data; alert("데이터 로드 완료!"); commit(); } } catch(e) { alert("로드 실패!"); } }
     function openModal(mode, tId = null) {
@@ -298,6 +321,16 @@
       };
     }
     function initHeader() { const b = document.getElementById('shift-badge'); b.innerText = db.shift === 'night' ? "🌙 야간 근무" : "☀️ 주간 근무"; b.className = `px-4 py-2 rounded-full text-[10px] font-black shadow-md ${db.shift === 'night' ? 'bg-indigo-950 text-white' : 'bg-amber-400 text-amber-950'}`; document.getElementById('date-display').innerText = new Date().toLocaleDateString('ko-KR', { month: 'long', day: 'numeric', weekday: 'short' }); }
+    function enableMemoEdit() { const el = document.getElementById('memo-textarea'); el.readOnly = false; document.getElementById('body-root').className = "editing-mode"; document.getElementById('memo-settings-popup').classList.remove('active'); el.focus(); }
+    function lockMemo() { const el = document.getElementById('memo-textarea'); el.readOnly = true; document.getElementById('body-root').className = "editing-mode-off"; }
+    function updateMemo(val) { db.memo = val; localStorage.setItem(DB_KEY, JSON.stringify(db)); }
+    function updateFontSize(val) { db.memoFontSize = val; document.getElementById('memo-textarea').style.fontSize = val + 'px'; document.getElementById('font-size-label').innerText = val; localStorage.setItem(DB_KEY, JSON.stringify(db)); }
+    function watchLongPress(el, callback) {
+      const start = (e) => { if (e.type === 'click' || (e.touches && e.touches.length > 1)) return; pressTimer = setTimeout(() => { callback(); pressTimer = null; }, 600); };
+      const cancel = () => clearTimeout(pressTimer);
+      el.addEventListener('mousedown', start); el.addEventListener('touchstart', start, {passive: true});
+      el.addEventListener('mouseup', cancel); el.addEventListener('touchend', cancel); el.addEventListener('mouseleave', cancel);
+    }
     function initSortableItems() { 
       const el = document.getElementById('folder-container'); if (Sortable.get(el)) Sortable.get(el).destroy(); 
       new Sortable(el, { handle: '.handle', delay: 800, delayOnTouchOnly: true, touchStartThreshold: 5, animation: 250, ghostClass: 'sortable-ghost', onEnd: function() {
