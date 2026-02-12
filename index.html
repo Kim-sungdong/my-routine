@@ -9,7 +9,7 @@
   <link rel="apple-touch-icon" href="icon.png">
   <meta name="theme-color" content="#F8FAFC">
 
-  <title>스마트 루틴 & 메모 v38</title>
+  <title>스마트 루틴 & 메모 v40</title>
   <script src="https://cdn.tailwindcss.com"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/Sortable/1.15.0/Sortable.min.js"></script>
   <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
@@ -145,94 +145,119 @@
   </div>
 
   <script>
-    const DB_KEY = 'v38_final_db';
+    const DB_KEY = 'v40_final_db';
     let db = JSON.parse(localStorage.getItem(DB_KEY)) || { items: [], tasks: [], shift: 'night', openFolders: [], stats: { streak: 0, totalSuccess: 0, lastSuccessDate: '' }, memo: '', memoFontSize: 16, serverUrl: '' };
     let tempFreq = 'daily', pressTimer, touchStartX = 0, currentScreen = 0;
+    
+    // Manual Reset Protection Flag
+    let isManualReset = false; 
 
     function commit() { localStorage.setItem(DB_KEY, JSON.stringify(db)); render(); }
     function getTodayStr() { return new Date().toISOString().split('T')[0]; }
 
-    // --- 수동 초기화: 상태만 초기화하고 통계는 건드리지 않음 ---
+    // --- 수동 초기화: 상태 초기화 시 '날짜 기록(lastDoneDate)'도 같이 지움 ---
     function manualResetTasks() {
       if(confirm('모든 루틴의 체크를 초기화할까요?\n(통계는 유지됩니다)')) {
+        isManualReset = true;
         db.tasks.forEach(t => { 
-          // 주간 루틴은 오늘 날짜만 지우고 횟수는 놔둘 수도 있지만, 
-          // '초기화'의 의미상 '오늘 안 한 상태'로 돌립니다.
+          // 주간 루틴: 오늘 완료분 취소
           if (typeof t.freq === 'number' && t.lastDoneDate === getTodayStr()) {
-             // 만약 오늘 '완료'해서 카운트가 올라갔었다면 다시 내립니다.
              if(t.status === 'done') t.weeklyCount = Math.max(0, t.weeklyCount - 1);
-             t.lastDoneDate = ''; 
           }
+          // 공통: 모든 기록 날림 (일일 루틴도 lastDoneDate 초기화)
+          t.lastDoneDate = ''; 
           t.status = 'todo'; 
         });
         commit();
+        isManualReset = false;
         document.getElementById('side-menu').classList.add('hidden');
         alert('초기화되었습니다.');
       }
     }
 
-    // --- 통계 로직 수정: 체크 해제 시 통계 감소 방지 ---
+    // --- 통계 로직: 반드시 '오늘 날짜(today)'가 찍혀 있어야만 달성으로 인정 ---
     function updateSharedStreak() {
       const today = getTodayStr(), yesterday = new Date(new Date().setDate(new Date().getDate() - 1)).toISOString().split('T')[0];
+      
       const checkDone = (s) => { 
-        const ts = db.tasks.filter(t => t.shift === s); 
-        // 주간 루틴 조건 수정: status가 'skip'이어도 달성으로 인정 (lastDoneDate가 오늘이면 OK)
-        return ts.length > 0 && ts.every(t => (t.freq === 'daily' && (t.status === 'done' || t.status === 'skip')) || (typeof t.freq === 'number' && t.lastDoneDate === today)); 
+        const ts = db.tasks.filter(t => t.shift === s);
+        // [중요] 일일 루틴도 t.lastDoneDate === today 조건 추가
+        // 즉, 'Done' 상태여도 날짜가 오늘이 아니면(어제 한 거면) 인정 안 함
+        return ts.length > 0 && ts.every(t => (
+          (t.freq === 'daily' && (t.status === 'done' || t.status === 'skip') && t.lastDoneDate === today) || 
+          (typeof t.freq === 'number' && t.lastDoneDate === today)
+        )); 
       };
       
-      // 달성 시 증가 로직
-      if ((checkDone('day') || checkDone('night')) && db.stats.lastSuccessDate !== today) { 
+      const isDone = (checkDone('day') || checkDone('night'));
+
+      // 1. 달성 시 증가
+      if (isDone && db.stats.lastSuccessDate !== today) { 
         db.stats.streak = (db.stats.lastSuccessDate === yesterday) ? db.stats.streak + 1 : 1; 
         db.stats.totalSuccess += 1; 
         db.stats.lastSuccessDate = today; 
       }
-      // 체크 해제 시 감소 로직 '삭제' (요청사항 반영)
-      // else if (!(checkDone...) ...) { ... }  <-- 이 부분을 삭제하여 통계가 줄어들지 않게 함
+      // 2. 취소 시 감소 (롤백)
+      else if (!isDone && db.stats.lastSuccessDate === today) {
+        if (!isManualReset) {
+            db.stats.streak = Math.max(0, db.stats.streak - 1);
+            db.stats.totalSuccess = Math.max(0, db.stats.totalSuccess - 1);
+            db.stats.lastSuccessDate = (db.stats.streak > 0) ? yesterday : '';
+        }
+      }
     }
 
-    // --- 상태 업데이트 로직 개선: 주간 루틴 스킵 처리 ---
+    // --- 상태 업데이트: 일일 루틴도 완료 시 '오늘 날짜' 도장 찍기 ---
     function updateStatus(id, s) {
       const t = db.tasks.find(x => String(x.id) === String(id)); if(!t) return;
       const today = getTodayStr();
       
-      // 주간 루틴 로직 변경
       if(typeof t.freq === 'number') {
+        // 주간 루틴 로직 (기존 동일)
         const isDoneToday = t.lastDoneDate === today;
-        // 토글 로직 (이미 같은 상태면 todo로 복귀)
         const newS = (t.status === s && isDoneToday) ? 'todo' : s;
-
         if (newS === 'done') {
            if (!isDoneToday) { t.weeklyCount += 1; t.lastDoneDate = today; }
-           // 이미 오늘 skip이었다가 done으로 바꾸면 카운트만 증가 (날짜는 이미 오늘)
            else if (t.status === 'skip') { t.weeklyCount += 1; }
         } 
         else if (newS === 'skip') {
-           // 스킵은 달성도는 오르지만(lastDoneDate=today), 횟수(weeklyCount)는 안 오름
            if (!isDoneToday) { t.lastDoneDate = today; } 
-           // 만약 done이었다가 skip으로 바꾸면 횟수 차감
            else if (t.status === 'done') { t.weeklyCount = Math.max(0, t.weeklyCount - 1); }
         }
-        else { // todo, failed 등으로 갈 때
+        else { 
            if (isDoneToday) {
-             // done에서 왔으면 횟수 차감
              if(t.status === 'done') t.weeklyCount = Math.max(0, t.weeklyCount - 1);
              t.lastDoneDate = ''; 
            }
         }
         t.status = newS;
       } else {
-        // 일일 루틴 로직
-        t.status = (t.status === s) ? 'todo' : s;
+        // [중요] 일일 루틴 로직 변경
+        const newS = (t.status === s) ? 'todo' : s;
+        t.status = newS;
+        
+        // 완료나 스킵을 누르면 '오늘 날짜'를 기록함
+        if (newS === 'done' || newS === 'skip') {
+            t.lastDoneDate = today;
+        } else {
+            // 취소하면 날짜도 지움
+            t.lastDoneDate = '';
+        }
       }
       commit();
     }
 
-    // --- 기존 로직 유지 ---
     function render() {
       const container = document.getElementById('folder-container'); container.innerHTML = '';
       const today = getTodayStr(), curItems = db.items.filter(i => i.shift === db.shift), curTasks = db.tasks.filter(t => t.shift === db.shift);
-      // 진행도 계산 시 주간 루틴도 오늘 날짜 찍혀있으면 달성으로 인정
-      const total = curTasks.length, done = curTasks.filter(t => (t.freq === 'daily' && (t.status === 'done' || t.status === 'skip')) || (typeof t.freq === 'number' && t.lastDoneDate === today)).length;
+      
+      // 진행도 계산: 일일 루틴도 '오늘 날짜'가 있어야만 카운트
+      const total = curTasks.length;
+      const done = curTasks.filter(t => (
+        (t.freq === 'daily' && (t.status === 'done' || t.status === 'skip') && t.lastDoneDate === today) || 
+        (typeof t.freq === 'number' && t.lastDoneDate === today)
+      )).length;
+      
       const blue = total > 0 ? (done / total) * 100 : 0;
       
       updateSharedStreak();
@@ -253,11 +278,14 @@
           container.appendChild(dDiv);
         } else {
           const fTasks = curTasks.filter(t => String(t.folderId) === String(item.id)), isOpen = db.openFolders.includes(String(item.id));
-          const isFDone = fTasks.length > 0 && fTasks.every(t => t.status !== 'todo' || (typeof t.freq === 'number' && t.lastDoneDate === today));
+          // 폴더 완료 여부도 날짜 기준
+          const isFDone = fTasks.length > 0 && fTasks.every(t => t.status !== 'todo' && t.lastDoneDate === today);
           const fDiv = document.createElement('div'); fDiv.dataset.id = item.id; fDiv.className = `bg-white rounded-3xl border border-slate-100 overflow-hidden ${isOpen ? 'folder-open mb-2 shadow-sm' : ''}`;
           fDiv.innerHTML = `<div class="flex justify-between items-center cursor-pointer h-12" onclick="toggleFolder('${item.id}')"><div class="flex items-center h-full overflow-hidden text-left"><div class="handle" onclick="event.stopPropagation()"><i class="fa-solid fa-grip-vertical text-[10px]"></i></div><h2 class="editable-text text-[12px] font-black text-slate-800 truncate text-left">${item.name}</h2>${isFDone ? '<span class="text-[8px] bg-blue-600 text-white px-2 py-0.5 rounded-full font-black ml-2 shrink-0">완료</span>' : ''}</div><div class="flex items-center h-full"><button onclick="event.stopPropagation(); deleteItem('${item.id}')" class="w-10 text-slate-200 border-none bg-transparent"><i class="fa-solid fa-trash-can text-[10px]"></i></button><div class="w-10 text-center"><i class="fa-solid fa-chevron-down text-slate-300 text-[9px] chevron transition-transform"></i></div></div></div><div class="folder-content px-4 pb-4" id="tasks-${item.id}"><div class="space-y-1 border-t border-slate-50 pt-3">${fTasks.map(t => {
-            const isDoneT = (t.freq === 'daily' && t.status === 'done') || (typeof t.freq === 'number' && t.lastDoneDate === today);
-            return `<div class="flex items-center justify-between py-1 h-11" data-taskid="${t.id}"><div class="handle -ml-4"><i class="fa-solid fa-grip-vertical text-[9px]"></i></div><div class="flex-1 pr-2 overflow-hidden text-left"><span class="editable-text text-[12px] font-bold block truncate text-left ${isDoneT || t.status === 'skip' || t.status === 'failed' ? 'line-through text-slate-300 font-normal' : 'text-slate-700'}">${t.content}</span>${typeof t.freq === 'number' ? `<span class="text-[8px] font-black text-blue-500 uppercase">주간 ${t.weeklyCount}/${t.freq}회</span>` : ''}</div><div class="flex gap-1 items-center"><button onclick="updateStatus('${t.id}', 'done')" class="w-8 h-8 rounded-xl border-none ${isDoneT ? 'bg-blue-600 text-white' : 'bg-slate-50 text-slate-300'}"><i class="fa-solid fa-check text-[10px]"></i></button><button onclick="updateStatus('${t.id}', 'failed')" class="w-8 h-8 rounded-xl border-none ${t.status === 'failed' ? 'bg-red-500 text-white' : 'bg-slate-50 text-slate-300'}"><i class="fa-solid fa-xmark text-[10px]"></i></button><button onclick="updateStatus('${t.id}', 'skip')" class="w-8 h-8 rounded-xl border-none ${t.status === 'skip' ? 'bg-slate-800 text-white' : 'bg-slate-50 text-slate-300'}"><i class="fa-solid fa-forward-step text-[9px]"></i></button><button onclick="deleteTask('${t.id}')" class="w-8 h-8 text-slate-200 border-none bg-transparent"><i class="fa-solid fa-trash-can text-[10px]"></i></button></div></div>`;
+            // 시각적 상태(Check)는 t.status를 따르지만, 실제 완료(Date)는 t.lastDoneDate를 따름
+            // 사용자가 'Reset'을 안 했으면 Check는 되어 있음. 그러나 Date가 다르면 완료 처리 안 함.
+            const isDoneT = (t.status === 'done' || t.status === 'skip'); 
+            return `<div class="flex items-center justify-between py-1 h-11" data-taskid="${t.id}"><div class="handle -ml-4"><i class="fa-solid fa-grip-vertical text-[9px]"></i></div><div class="flex-1 pr-2 overflow-hidden text-left"><span class="editable-text text-[12px] font-bold block truncate text-left ${isDoneT || t.status === 'failed' ? 'line-through text-slate-300 font-normal' : 'text-slate-700'}">${t.content}</span>${typeof t.freq === 'number' ? `<span class="text-[8px] font-black text-blue-500 uppercase">주간 ${t.weeklyCount}/${t.freq}회</span>` : ''}</div><div class="flex gap-1 items-center"><button onclick="updateStatus('${t.id}', 'done')" class="w-8 h-8 rounded-xl border-none ${t.status === 'done' ? 'bg-blue-600 text-white' : 'bg-slate-50 text-slate-300'}"><i class="fa-solid fa-check text-[10px]"></i></button><button onclick="updateStatus('${t.id}', 'failed')" class="w-8 h-8 rounded-xl border-none ${t.status === 'failed' ? 'bg-red-500 text-white' : 'bg-slate-50 text-slate-300'}"><i class="fa-solid fa-xmark text-[10px]"></i></button><button onclick="updateStatus('${t.id}', 'skip')" class="w-8 h-8 rounded-xl border-none ${t.status === 'skip' ? 'bg-slate-800 text-white' : 'bg-slate-50 text-slate-300'}"><i class="fa-solid fa-forward-step text-[9px]"></i></button><button onclick="deleteTask('${t.id}')" class="w-8 h-8 text-slate-200 border-none bg-transparent"><i class="fa-solid fa-trash-can text-[10px]"></i></button></div></div>`;
           }).join('')}<button onclick="openModal('task', '${item.id}')" class="w-full py-3 mt-2 bg-slate-50 rounded-2xl text-slate-400 text-[10px] font-black border border-dashed border-slate-200 active:bg-slate-100">+ 루틴 추가</button></div></div>`;
           
           watchLongPress(fDiv.querySelector('.editable-text'), () => openModal('editItem', item.id));
